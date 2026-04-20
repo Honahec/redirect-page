@@ -42,7 +42,7 @@ Docker environment options:
 
 ```text
 ENABLE_HTTPS=false
-TLS_CERT_DIR=/home/honahec/Documents/localCA
+TLS_CERT_DIR=/path/to/certs
 TLS_CERT_FILE=mycert.pem
 TLS_KEY_FILE=mycert-key.pem
 ```
