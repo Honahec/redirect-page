@@ -1,0 +1,17 @@
+services:
+  redirect-page:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: redirect-page
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ENABLE_HTTPS: ${ENABLE_HTTPS:-false}
+      SERVER_NAME: ${SERVER_NAME:-_}
+      TLS_CERT_FILE: ${TLS_CERT_FILE:-mycert.pem}
+      TLS_KEY_FILE: ${TLS_KEY_FILE:-mycert-key.pem}
+    volumes:
+      - ${TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
