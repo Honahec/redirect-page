@@ -3,8 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: web
     container_name: redirect-page
     restart: unless-stopped
+    depends_on:
+      - redirect-page-api
     ports:
       - "80:80"
       - "443:443"
@@ -13,5 +16,21 @@ services:
       SERVER_NAME: ${SERVER_NAME:-_}
       TLS_CERT_FILE: ${TLS_CERT_FILE:-mycert.pem}
       TLS_KEY_FILE: ${TLS_KEY_FILE:-mycert-key.pem}
+      API_UPSTREAM: http://redirect-page-api:3000
     volumes:
       - ${TLS_CERT_DIR:-./certs}:/etc/nginx/certs:ro
+  redirect-page-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    container_name: redirect-page-api
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+    volumes:
+      - redirect-page-data:/data
+
+volumes:
+  redirect-page-data:

@@ -11,10 +11,11 @@ import {
   buildServiceUrl,
   changeAdminPassword,
   clearCachedSessionPassword,
+  fetchAdminState,
+  fetchPublicConfig,
+  getDefaultPublicConfig,
   getCachedSessionPassword,
-  hasAdminPassword,
   initializeAdminPassword,
-  loadPublicConfig,
   restoreFromEncryptedBackup,
   saveAdminConfig,
   unlockAdmin,
@@ -23,10 +24,10 @@ import type { PublicAppConfig, ServiceItem } from '@/types/app';
 
 function SettingsPage() {
   const [config, setConfig] = useState<PublicAppConfig>(() =>
-    loadPublicConfig(),
+    getDefaultPublicConfig(),
   );
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [isInitialized, setIsInitialized] = useState(hasAdminPassword());
+  const [isInitialized, setIsInitialized] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState('');
   const [setupPassword, setSetupPassword] = useState('');
   const [setupPasswordConfirm, setSetupPasswordConfirm] = useState('');
@@ -41,18 +42,47 @@ function SettingsPage() {
   });
 
   useEffect(() => {
-    const cachedPassword = getCachedSessionPassword();
-    if (!cachedPassword || !isInitialized) {
-      return;
-    }
+    let isActive = true;
 
-    unlockAdmin(cachedPassword).then((verified) => {
-      if (verified) {
+    const bootstrap = async () => {
+      try {
+        const [state, publicConfig] = await Promise.all([
+          fetchAdminState(),
+          fetchPublicConfig(),
+        ]);
+
+        if (!isActive) {
+          return;
+        }
+
+        setIsInitialized(state.initialized);
+        setConfig(publicConfig);
+
+        const cachedPassword = getCachedSessionPassword();
+        if (!cachedPassword || !state.initialized) {
+          return;
+        }
+
+        const verified = await unlockAdmin(cachedPassword);
+        if (!verified || !isActive) {
+          return;
+        }
+
         setIsUnlocked(true);
-        setConfig(loadPublicConfig());
+        setConfig(await fetchPublicConfig());
+      } catch {
+        if (isActive) {
+          setStatusMessage('Failed to load server data.');
+        }
       }
-    });
-  }, [isInitialized]);
+    };
+
+    void bootstrap();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   const updateConfig = <K extends keyof PublicAppConfig>(
     key: K,
@@ -78,6 +108,7 @@ function SettingsPage() {
     await initializeAdminPassword(setupPassword, config);
     setIsInitialized(true);
     setIsUnlocked(true);
+    setConfig(await fetchPublicConfig());
     setUnlockPassword('');
     setPasswordStatus('Admin password is enabled.');
   };
@@ -89,7 +120,7 @@ function SettingsPage() {
       return;
     }
 
-    setConfig(loadPublicConfig());
+    setConfig(await fetchPublicConfig());
     setIsUnlocked(true);
     setPasswordStatus('');
   };

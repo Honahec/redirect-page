@@ -11,6 +11,8 @@ The home page shows:
 
 The settings page is password protected and lets you manage the list manually.
 
+Configuration is stored on the server, so the same list is shared across `localhost`, LAN IP, and domain access.
+
 ## Usage
 
 Install dependencies:
@@ -37,6 +39,8 @@ Run with Docker:
 cp .env.example .env
 docker compose up -d --build
 ```
+
+Persistent data is stored in the Docker volume `redirect-page-data`. Restarting or recreating the containers keeps the saved list and admin password unless that volume is removed explicitly.
 
 Docker environment options:
 

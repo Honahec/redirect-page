@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 
-import { createPasswordVerifier, decryptJson, encryptJson, verifyPassword } from '@/lib/crypto'
 import { normalizePath } from '@/lib/utils'
 import type { EncryptedBackup, PasswordVerifier, PublicAppConfig, ServiceItem } from '@/types/app'
 
@@ -9,26 +8,9 @@ const AUTH_KEY = 'redirect-page-admin-auth'
 const BACKUP_KEY = 'redirect-page-admin-backup'
 const SESSION_PASSWORD_KEY = 'redirect-page-session-password'
 const CONFIG_EVENT = 'redirect-page-config-updated'
-
-const defaultConfig: PublicAppConfig = {
-  siteTitle: 'Local Services',
-  siteDescription: 'Local service list managed manually from the settings page.',
-  lanIpv4: '',
-  services: [],
-  updatedAt: new Date().toISOString(),
-}
-
-function parseJson<T>(value: string | null): T | null {
-  if (!value) {
-    return null
-  }
-
-  try {
-    return JSON.parse(value) as T
-  } catch {
-    return null
-  }
-}
+const API_ROOT = '/api'
+let legacyMigrationPromise: Promise<void> | null = null
+let legacyMigrationAttempted = false
 
 function sanitizeService(service: ServiceItem): ServiceItem {
   return {
@@ -44,9 +26,11 @@ function sanitizeService(service: ServiceItem): ServiceItem {
 }
 
 function sanitizeConfig(config: PublicAppConfig): PublicAppConfig {
+  const fallback = getDefaultPublicConfig()
+
   return {
-    siteTitle: config.siteTitle.trim() || defaultConfig.siteTitle,
-    siteDescription: config.siteDescription.trim() || defaultConfig.siteDescription,
+    siteTitle: config.siteTitle.trim() || fallback.siteTitle,
+    siteDescription: config.siteDescription.trim() || fallback.siteDescription,
     lanIpv4: config.lanIpv4.trim(),
     services: config.services
       .map(sanitizeService)
@@ -55,50 +39,132 @@ function sanitizeConfig(config: PublicAppConfig): PublicAppConfig {
   }
 }
 
-export function loadPublicConfig() {
-  return sanitizeConfig(parseJson<PublicAppConfig>(localStorage.getItem(PUBLIC_CONFIG_KEY)) ?? defaultConfig)
+export function getDefaultPublicConfig(): PublicAppConfig {
+  return {
+    siteTitle: 'Local Services',
+    siteDescription: 'Local service list managed manually from the settings page.',
+    lanIpv4: '',
+    services: [],
+    updatedAt: new Date().toISOString(),
+  }
 }
 
-export function savePublicConfig(config: PublicAppConfig) {
-  const nextConfig = sanitizeConfig({
-    ...config,
-    updatedAt: new Date().toISOString(),
+function parseJson<T>(value: string | null): T | null {
+  if (!value) {
+    return null
+  }
+
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return null
+  }
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_ROOT}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
   })
 
-  localStorage.setItem(PUBLIC_CONFIG_KEY, JSON.stringify(nextConfig))
+  const payload = (await response.json().catch(() => null)) as
+    | { error?: string }
+    | T
+    | null
+  const errorMessage =
+    payload && typeof payload === 'object' && 'error' in payload ? payload.error : undefined
+
+  if (!response.ok) {
+    throw new Error(errorMessage || 'request-failed')
+  }
+
+  return payload as T
+}
+
+function emitConfigUpdated() {
   window.dispatchEvent(new Event(CONFIG_EVENT))
-  return nextConfig
+}
+
+async function migrateLegacyStateIfNeeded() {
+  if (legacyMigrationAttempted) {
+    return
+  }
+
+  if (legacyMigrationPromise) {
+    await legacyMigrationPromise
+    return
+  }
+
+  const config = parseJson<PublicAppConfig>(localStorage.getItem(PUBLIC_CONFIG_KEY))
+  const auth = parseJson<PasswordVerifier>(localStorage.getItem(AUTH_KEY))
+  const backup = parseJson<EncryptedBackup>(localStorage.getItem(BACKUP_KEY))
+
+  if (!config && !auth && !backup) {
+    legacyMigrationAttempted = true
+    return
+  }
+
+  legacyMigrationPromise = requestJson('/admin/import-legacy', {
+    method: 'POST',
+    body: JSON.stringify({ config, auth, backup }),
+  })
+    .catch((error: Error) => {
+      if (error.message !== 'already-initialized') {
+        throw error
+      }
+    })
+    .then(() => undefined)
+    .finally(() => {
+      legacyMigrationAttempted = true
+      legacyMigrationPromise = null
+    })
+
+  await legacyMigrationPromise
+}
+
+export async function fetchPublicConfig() {
+  await migrateLegacyStateIfNeeded()
+  const payload = await requestJson<{ config: PublicAppConfig }>('/config')
+  return sanitizeConfig(payload.config)
 }
 
 export function usePublicConfig() {
-  const [config, setConfig] = useState<PublicAppConfig>(() => loadPublicConfig())
+  const [config, setConfig] = useState<PublicAppConfig>(() => getDefaultPublicConfig())
 
   useEffect(() => {
-    const syncConfig = () => {
-      setConfig(loadPublicConfig())
+    let isActive = true
+
+    const syncConfig = async () => {
+      try {
+        const nextConfig = await fetchPublicConfig()
+        if (isActive) {
+          setConfig(nextConfig)
+        }
+      } catch {
+        if (isActive) {
+          setConfig(getDefaultPublicConfig())
+        }
+      }
     }
 
+    void syncConfig()
     window.addEventListener(CONFIG_EVENT, syncConfig)
-    window.addEventListener('storage', syncConfig)
+
     return () => {
+      isActive = false
       window.removeEventListener(CONFIG_EVENT, syncConfig)
-      window.removeEventListener('storage', syncConfig)
     }
   }, [])
 
   return config
 }
 
-function loadPasswordVerifier() {
-  return parseJson<PasswordVerifier>(localStorage.getItem(AUTH_KEY))
-}
-
-function loadEncryptedBackup() {
-  return parseJson<EncryptedBackup>(localStorage.getItem(BACKUP_KEY))
-}
-
-export function hasAdminPassword() {
-  return Boolean(loadPasswordVerifier())
+export async function fetchAdminState() {
+  await migrateLegacyStateIfNeeded()
+  return requestJson<{ initialized: boolean }>('/admin/state')
 }
 
 export function getCachedSessionPassword() {
@@ -114,40 +180,46 @@ function cacheSessionPassword(password: string) {
 }
 
 export async function initializeAdminPassword(password: string, config: PublicAppConfig) {
-  const verifier = await createPasswordVerifier(password)
-  const savedConfig = savePublicConfig(config)
-  const encryptedBackup = await encryptJson(savedConfig, password)
+  const payload = await requestJson<{ config: PublicAppConfig }>('/admin/initialize', {
+    method: 'POST',
+    body: JSON.stringify({ password, config }),
+  })
 
-  localStorage.setItem(AUTH_KEY, JSON.stringify(verifier))
-  localStorage.setItem(BACKUP_KEY, JSON.stringify(encryptedBackup))
+  const savedConfig = sanitizeConfig(payload.config)
   cacheSessionPassword(password)
+  emitConfigUpdated()
 
   return savedConfig
 }
 
 export async function unlockAdmin(password: string) {
-  const verifier = loadPasswordVerifier()
-  if (!verifier) {
-    return false
-  }
+  const payload = await requestJson<{ ok: boolean }>('/admin/unlock', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
 
-  const verified = await verifyPassword(password, verifier)
-  if (verified) {
+  if (payload.ok) {
     cacheSessionPassword(password)
   }
 
-  return verified
+  return payload.ok
 }
 
-export async function saveAdminConfig(config: PublicAppConfig, password = getCachedSessionPassword()) {
+export async function saveAdminConfig(
+  config: PublicAppConfig,
+  password = getCachedSessionPassword(),
+) {
   if (!password) {
     throw new Error('missing-password')
   }
 
-  const savedConfig = savePublicConfig(config)
-  const encryptedBackup = await encryptJson(savedConfig, password)
-  localStorage.setItem(BACKUP_KEY, JSON.stringify(encryptedBackup))
+  const payload = await requestJson<{ config: PublicAppConfig }>('/admin/config', {
+    method: 'PUT',
+    body: JSON.stringify({ password, config }),
+  })
 
+  const savedConfig = sanitizeConfig(payload.config)
+  emitConfigUpdated()
   return savedConfig
 }
 
@@ -156,26 +228,22 @@ export async function restoreFromEncryptedBackup(password = getCachedSessionPass
     throw new Error('missing-password')
   }
 
-  const backup = loadEncryptedBackup()
-  if (!backup) {
-    throw new Error('missing-backup')
-  }
+  const payload = await requestJson<{ config: PublicAppConfig }>('/admin/restore', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
 
-  const restoredConfig = await decryptJson<PublicAppConfig>(backup, password)
-  return savePublicConfig(restoredConfig)
+  const restoredConfig = sanitizeConfig(payload.config)
+  emitConfigUpdated()
+  return restoredConfig
 }
 
 export async function changeAdminPassword(currentPassword: string, nextPassword: string) {
-  const verified = await unlockAdmin(currentPassword)
-  if (!verified) {
-    throw new Error('invalid-password')
-  }
+  await requestJson('/admin/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, nextPassword }),
+  })
 
-  const verifier = await createPasswordVerifier(nextPassword)
-  const encryptedBackup = await encryptJson(loadPublicConfig(), nextPassword)
-
-  localStorage.setItem(AUTH_KEY, JSON.stringify(verifier))
-  localStorage.setItem(BACKUP_KEY, JSON.stringify(encryptedBackup))
   cacheSessionPassword(nextPassword)
 }
 

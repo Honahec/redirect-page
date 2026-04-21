@@ -5,6 +5,7 @@ ENABLE_HTTPS="${ENABLE_HTTPS:-false}"
 SERVER_NAME="${SERVER_NAME:-_}"
 TLS_CERT_FILE="${TLS_CERT_FILE:-mycert.pem}"
 TLS_KEY_FILE="${TLS_KEY_FILE:-mycert-key.pem}"
+API_UPSTREAM="${API_UPSTREAM:-http://redirect-page-api:3000}"
 CONFIG_PATH="/etc/nginx/conf.d/default.conf"
 
 if [ "$ENABLE_HTTPS" = "true" ]; then
@@ -45,6 +46,22 @@ server {
   root /usr/share/nginx/html;
   index index.html;
 
+  location = /api {
+    proxy_pass $API_UPSTREAM;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+
+  location ^~ /api/ {
+    proxy_pass $API_UPSTREAM;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+
   location / {
     try_files \$uri \$uri/ /index.html;
   }
@@ -63,6 +80,22 @@ server {
 
   root /usr/share/nginx/html;
   index index.html;
+
+  location = /api {
+    proxy_pass $API_UPSTREAM;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+
+  location ^~ /api/ {
+    proxy_pass $API_UPSTREAM;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
 
   location / {
     try_files \$uri \$uri/ /index.html;
